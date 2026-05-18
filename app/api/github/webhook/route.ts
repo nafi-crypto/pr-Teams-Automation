@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWebhookUrlForRepo, verifyGitHubSecret } from '@/lib/config';
-import { formatTeamsMessage, WebhookPayload } from '@/lib/teams-formatter';
+import { verifyGitHubSecret } from '@/lib/config';
+import { routeWebhook, deliverToChannel } from '@/lib/routing-engine';
+import type { WebhookPayload } from '@/lib/teams-formatter';
 
 export async function POST(req: NextRequest) {
   try {
     // 1. Get the raw body for signature verification
     const rawBody = await req.text();
-    
+
     // 2. Verify signature if a secret is configured
     const signature = req.headers.get('x-hub-signature-256');
     if (signature && !verifyGitHubSecret(signature, rawBody)) {
@@ -21,53 +22,52 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
     }
 
-    // 4. Get the GitHub event type
-    const event = req.headers.get('x-github-event') || 'unknown';
-    if (event === 'ping') {
+    // 4. Get the GitHub event type from header
+    const eventType = req.headers.get('x-github-event') || 'unknown';
+    if (eventType === 'ping') {
       return NextResponse.json({ message: 'Pong! Webhook is working.' }, { status: 200 });
     }
 
-    // 5. Ensure we have repository information
+    // 5. Validate repository info
     if (!payload.repository || !payload.repository.full_name) {
       return NextResponse.json({ error: 'Missing repository information in payload' }, { status: 400 });
     }
 
     const repoName = payload.repository.full_name;
+    const action = payload.action;
+    const eventKey = action ? `${eventType}.${action}` : eventType;
 
-    // 6. Look up the corresponding Teams Webhook URL
-    const teamsWebhookUrl = getWebhookUrlForRepo(repoName);
-    if (!teamsWebhookUrl) {
-      console.log(`No Teams Webhook URL mapped for repository: ${repoName}`);
-      return NextResponse.json({ message: 'Ignored: No mapping for this repository' }, { status: 200 });
+    console.log(`[Webhook] Received ${eventKey} for ${repoName}`);
+
+    // 6. Route through the engine — find all matching rules & format messages
+    const routeResults = routeWebhook(eventType, payload);
+
+    if (routeResults.length === 0) {
+      console.log(`[Webhook] No matching rules for ${repoName} / ${eventKey}`);
+      return NextResponse.json(
+        { message: 'No matching routing rules', repo: repoName, event: eventKey },
+        { status: 200 }
+      );
     }
 
-    // 7. Format the Teams message based on the event type
-    const teamsMessage = formatTeamsMessage(event, payload);
-    if (!teamsMessage) {
-      console.log(`Event ignored or not supported: ${event} / Action: ${payload.action}`);
-      return NextResponse.json({ message: 'Event ignored or not supported' }, { status: 200 });
-    }
+    // 7. Fan out — deliver to all matched channels in parallel
+    const deliveryResults = await Promise.all(
+      routeResults.map((r) => deliverToChannel(r.rule, r.formattedPayload))
+    );
 
-    // 8. Send the formatted message to Microsoft Teams
-    const response = await fetch(teamsWebhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(teamsMessage),
-    });
+    const successes = deliveryResults.filter((d) => d.success).length;
+    const failures = deliveryResults.filter((d) => !d.success).length;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Failed to send message to Teams: ${response.status} ${response.statusText}`, errorText);
-      return NextResponse.json({ error: 'Failed to notify Teams' }, { status: 502 });
-    }
+    console.log(`[Webhook] Delivered ${eventKey} for ${repoName}: ${successes} success, ${failures} failed`);
 
-    console.log(`Successfully routed ${event} for ${repoName} to Teams.`);
-    return NextResponse.json({ success: true, message: 'Notification sent' }, { status: 200 });
+    return NextResponse.json({
+      success: failures === 0,
+      message: `Routed to ${routeResults.length} channel(s): ${successes} delivered, ${failures} failed`,
+      deliveries: deliveryResults,
+    }, { status: failures > 0 ? 207 : 200 });
 
   } catch (error: any) {
-    console.error('Error handling webhook:', error);
+    console.error('[Webhook] Error handling webhook:', error);
     return NextResponse.json({ error: 'Internal Server Error', details: error.message }, { status: 500 });
   }
 }

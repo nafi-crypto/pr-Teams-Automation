@@ -1,0 +1,13 @@
+[
+  {
+    "id": "93lrfyetmpa426vc",
+    "repoName": "https://github.com/nafi-crypto/ecommerce1",
+    "channelType": "teams",
+    "channelName": "Migrated Channel",
+    "webhookUrl": "https://teams.live.com/l/invite/FEA2ngYtCHaOaYUGAE?v=g1",
+    "events": [
+      "*"
+    ],
+    "enabled": true
+  }
+]

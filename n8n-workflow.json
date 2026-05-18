@@ -1,0 +1,177 @@
+{
+  "name": "GitHub PR to MS Teams",
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "owner": "YOUR_GITHUB_ORG",
+        "repository": "YOUR_GITHUB_REPO",
+        "events": [
+          "pull_request"
+        ]
+      },
+      "id": "e6a0d2fa-1b3a-4e2a-8c90-9c2b3c1d9b41",
+      "name": "GitHub Trigger",
+      "type": "n8n-nodes-base.githubTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ],
+      "credentials": {
+        "githubOAuth2Api": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.body.pull_request ? true : false }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "1b3a4e2a-8c90-9c2b-3c1d-9b41e6a0d2fa",
+      "name": "IF: Is Pull Request",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.body.action }}",
+        "rules": {
+          "rules": [
+            {
+              "operation": "equal",
+              "value2": "opened"
+            },
+            {
+              "operation": "equal",
+              "value2": "closed"
+            },
+            {
+              "operation": "equal",
+              "value2": "reopened"
+            }
+          ]
+        }
+      },
+      "id": "8c909c2b-3c1d-9b41-e6a0-d2fa1b3a4e2a",
+      "name": "Switch on PR Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const repoName = $input.item.json.body.repository.full_name;\nconst action = $input.item.json.body.action;\nconst pr = $input.item.json.body.pull_request;\n\n// 1. Dynamic Map for Teams Channels\nconst repoToChannelMap = {\n  'your-org/repo-A': '19:xxxxxx@thread.v2',\n  'your-org/repo-B': '19:yyyyyy@thread.v2'\n};\n\nlet channelId = repoToChannelMap[repoName] || 'DEFAULT_CHANNEL_ID';\n\n// 2. Format the message payload based on action\nlet statusMsg = action;\nif (action === 'closed' && pr.merged) {\n  statusMsg = 'merged';\n}\n\n$input.item.json.teamsChannelId = channelId;\n$input.item.json.messageTitle = `Pull Request ${statusMsg} in ${repoName}`;\n$input.item.json.messageBody = `**${pr.title}**\\nBy: ${pr.user.login}\\nURL: ${pr.html_url}`;\n\nreturn $input.item;"
+      },
+      "id": "9c2b3c1d-9b41-e6a0-d2fa-1b3a4e2a8c90",
+      "name": "Code (Dynamic Map)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "teamId": "YOUR_TEAM_ID",
+        "channelId": "={{ $json.teamsChannelId }}",
+        "messageType": "text",
+        "text": "={{ $json.messageTitle }}\\n\\n{{ $json.messageBody }}"
+      },
+      "id": "3c1d9b41-e6a0-d2fa-1b3a-4e2a8c909c2b",
+      "name": "Microsoft Teams",
+      "type": "n8n-nodes-base.microsoftTeams",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ],
+      "credentials": {
+        "microsoftTeamsOAuth2Api": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Microsoft Teams account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "GitHub Trigger": {
+      "main": [
+        [
+          {
+            "node": "IF: Is Pull Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Is Pull Request": {
+      "main": [
+        [
+          {
+            "node": "Switch on PR Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch on PR Action": {
+      "main": [
+        [
+          {
+            "node": "Code (Dynamic Map)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code (Dynamic Map)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code (Dynamic Map)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code (Dynamic Map)": {
+      "main": [
+        [
+          {
+            "node": "Microsoft Teams",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {}
+}

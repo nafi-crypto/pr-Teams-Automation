@@ -6,6 +6,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     GitHub({
       clientId: process.env.GITHUB_ID,
       clientSecret: process.env.GITHUB_SECRET,
+      authorization: {
+        params: {
+          scope: 'read:user user:email repo',
+        },
+      },
     }),
   ],
   pages: {
@@ -14,9 +19,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   callbacks: {
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user;
-      
-      // We could protect routes here, but we will handle it in the dashboard component or middleware.
       return true;
+    },
+    async jwt({ token, account }) {
+      if (account) {
+        token.accessToken = account.access_token;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      if (token?.accessToken) {
+        session.accessToken = token.accessToken as string;
+      }
+      return session;
     },
   },
 })

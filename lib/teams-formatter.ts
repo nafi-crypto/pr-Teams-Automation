@@ -1,6 +1,12 @@
 /**
- * Types representing a subset of GitHub webhook payloads we care about
+ * Teams MessageCard formatter for GitHub webhook events.
+ * Expanded to cover push, deployment_status, release, star, fork, workflow_run,
+ * and a generic fallback for any other event type.
  */
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export interface GitHubUser {
   login: string;
@@ -48,15 +54,14 @@ export interface WebhookPayload {
   issue?: GitHubIssue;
   review?: GitHubReview;
   comment?: any;
+  [key: string]: any; // allow extra fields for push, release, etc.
 }
 
-/**
- * Formats a Teams Message Card (Legacy format, but widely supported by standard incoming webhooks)
- */
-export function formatTeamsMessage(event: string, payload: WebhookPayload): any | null {
-  const repoName = payload.repository.full_name;
-  const sender = payload.sender.login;
+// ---------------------------------------------------------------------------
+// Main entry
+// ---------------------------------------------------------------------------
 
+export function formatTeamsMessage(event: string, payload: WebhookPayload): any | null {
   switch (event) {
     case 'pull_request':
       return formatPullRequestEvent(payload);
@@ -66,72 +71,92 @@ export function formatTeamsMessage(event: string, payload: WebhookPayload): any 
       return formatIssueEvent(payload);
     case 'issue_comment':
       return formatIssueCommentEvent(payload);
+    case 'push':
+      return formatPushEvent(payload);
+    case 'deployment_status':
+      return formatDeploymentStatusEvent(payload);
+    case 'release':
+      return formatReleaseEvent(payload);
+    case 'star':
+    case 'fork':
+    case 'workflow_run':
+      return formatGenericEvent(event, payload);
     default:
-      // Unknown or unsupported event
-      return null;
+      return formatGenericEvent(event, payload);
   }
 }
 
-function formatPullRequestEvent(payload: WebhookPayload): any {
-  const pr = payload.pull_request;
-  const action = payload.action; // 'opened', 'closed', 'reopened', 'edited', 'assigned', 'unassigned', etc.
-  const repo = payload.repository;
-  
-  if (!pr) return null;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  let themeColor = '0078D7'; // Blue
-  let activityTitle = '';
-  
-  if (action === 'opened' || action === 'reopened') {
-    themeColor = '238636'; // Green
-    activityTitle = `Pull Request **${action}** in ${repo.full_name}`;
-  } else if (action === 'closed') {
-    if (pr.merged) {
-      themeColor = '8957E5'; // Purple
-      activityTitle = `Pull Request **merged** in ${repo.full_name}`;
-    } else {
-      themeColor = 'DA3633'; // Red
-      activityTitle = `Pull Request **closed** in ${repo.full_name}`;
-    }
-  } else {
-    // For other PR actions, maybe ignore or log
-    return null;
-  }
-
+function card(themeColor: string, summary: string, sections: any[], potentialAction?: any[]) {
   return {
-    "@type": "MessageCard",
-    "@context": "http://schema.org/extensions",
-    "themeColor": themeColor,
-    "summary": activityTitle,
-    "sections": [{
-      "activityTitle": activityTitle,
-      "activitySubtitle": `By [${pr.user.login}](${pr.user.html_url})`,
-      "activityImage": pr.user.avatar_url,
-      "facts": [
-        { "name": "Repository:", "value": `[${repo.name}](${repo.html_url})` },
-        { "name": "PR Title:", "value": pr.title },
-        { "name": "Status:", "value": pr.merged ? "Merged" : pr.state }
-      ],
-      "markdown": true
-    }],
-    "potentialAction": [{
-      "@type": "OpenUri",
-      "name": "View Pull Request",
-      "targets": [{ "os": "default", "uri": pr.html_url }]
-    }]
+    '@type': 'MessageCard',
+    '@context': 'http://schema.org/extensions',
+    themeColor,
+    summary,
+    sections,
+    ...(potentialAction ? { potentialAction } : {}),
   };
 }
 
-function formatPullRequestReviewEvent(payload: WebhookPayload): any {
+function openUriAction(name: string, uri: string) {
+  return { '@type': 'OpenUri', name, targets: [{ os: 'default', uri }] };
+}
+
+// ---------------------------------------------------------------------------
+// Event formatters
+// ---------------------------------------------------------------------------
+
+function formatPullRequestEvent(payload: WebhookPayload): any | null {
+  const pr = payload.pull_request;
+  const action = payload.action;
+  const repo = payload.repository;
+  if (!pr) return null;
+
+  let themeColor = '0078D7';
+  let activityTitle = '';
+
+  if (action === 'opened' || action === 'reopened') {
+    themeColor = '238636';
+    activityTitle = `Pull Request **${action}** in ${repo.full_name}`;
+  } else if (action === 'closed') {
+    if (pr.merged) {
+      themeColor = '8957E5';
+      activityTitle = `Pull Request **merged** in ${repo.full_name}`;
+    } else {
+      themeColor = 'DA3633';
+      activityTitle = `Pull Request **closed** in ${repo.full_name}`;
+    }
+  } else {
+    return null;
+  }
+
+  return card(themeColor, activityTitle, [{
+    activityTitle,
+    activitySubtitle: `By [${pr.user.login}](${pr.user.html_url})`,
+    activityImage: pr.user.avatar_url,
+    facts: [
+      { name: 'Repository:', value: `[${repo.name}](${repo.html_url})` },
+      { name: 'PR Title:', value: pr.title },
+      { name: 'Status:', value: pr.merged ? 'Merged' : pr.state },
+      ...(pr.changed_files != null ? [{ name: 'Files Changed:', value: `${pr.changed_files}` }] : []),
+      ...(pr.additions != null ? [{ name: 'Changes:', value: `+${pr.additions} / -${pr.deletions}` }] : []),
+    ],
+    markdown: true,
+  }], [openUriAction('View Pull Request', pr.html_url)]);
+}
+
+function formatPullRequestReviewEvent(payload: WebhookPayload): any | null {
   const pr = payload.pull_request;
   const review = payload.review;
   const repo = payload.repository;
-  
   if (!pr || !review || payload.action !== 'submitted') return null;
 
   let themeColor = '0078D7';
   let statusText = 'reviewed';
-  
+
   if (review.state === 'approved') {
     themeColor = '238636';
     statusText = 'approved';
@@ -140,87 +165,144 @@ function formatPullRequestReviewEvent(payload: WebhookPayload): any {
     statusText = 'requested changes on';
   }
 
-  return {
-    "@type": "MessageCard",
-    "@context": "http://schema.org/extensions",
-    "themeColor": themeColor,
-    "summary": `PR Review: ${statusText}`,
-    "sections": [{
-      "activityTitle": `Pull Request **${statusText}** in ${repo.full_name}`,
-      "activitySubtitle": `By [${review.user.login}](${review.user.html_url})`,
-      "activityImage": review.user.avatar_url,
-      "facts": [
-        { "name": "PR Title:", "value": pr.title }
-      ],
-      "text": review.body ? `"${review.body}"` : "",
-      "markdown": true
-    }],
-    "potentialAction": [{
-      "@type": "OpenUri",
-      "name": "View Review",
-      "targets": [{ "os": "default", "uri": review.html_url }]
-    }]
-  };
+  return card(themeColor, `PR Review: ${statusText}`, [{
+    activityTitle: `Pull Request **${statusText}** in ${repo.full_name}`,
+    activitySubtitle: `By [${review.user.login}](${review.user.html_url})`,
+    activityImage: review.user.avatar_url,
+    facts: [{ name: 'PR Title:', value: pr.title }],
+    text: review.body ? `"${review.body}"` : '',
+    markdown: true,
+  }], [openUriAction('View Review', review.html_url)]);
 }
 
-function formatIssueEvent(payload: WebhookPayload): any {
+function formatIssueEvent(payload: WebhookPayload): any | null {
   const issue = payload.issue;
   const action = payload.action;
   const repo = payload.repository;
-
   if (!issue || (action !== 'opened' && action !== 'closed')) return null;
 
   const themeColor = action === 'opened' ? '238636' : '8957E5';
 
-  return {
-    "@type": "MessageCard",
-    "@context": "http://schema.org/extensions",
-    "themeColor": themeColor,
-    "summary": `Issue ${action} in ${repo.full_name}`,
-    "sections": [{
-      "activityTitle": `Issue **${action}** in ${repo.full_name}`,
-      "activitySubtitle": `By [${issue.user.login}](${issue.user.html_url})`,
-      "activityImage": issue.user.avatar_url,
-      "facts": [
-        { "name": "Issue:", "value": issue.title }
-      ],
-      "markdown": true
-    }],
-    "potentialAction": [{
-      "@type": "OpenUri",
-      "name": "View Issue",
-      "targets": [{ "os": "default", "uri": issue.html_url }]
-    }]
-  };
+  return card(themeColor, `Issue ${action} in ${repo.full_name}`, [{
+    activityTitle: `Issue **${action}** in ${repo.full_name}`,
+    activitySubtitle: `By [${issue.user.login}](${issue.user.html_url})`,
+    activityImage: issue.user.avatar_url,
+    facts: [{ name: 'Issue:', value: issue.title }],
+    markdown: true,
+  }], [openUriAction('View Issue', issue.html_url)]);
 }
 
-function formatIssueCommentEvent(payload: WebhookPayload): any {
+function formatIssueCommentEvent(payload: WebhookPayload): any | null {
   const issue = payload.issue;
   const comment = payload.comment;
   const repo = payload.repository;
+  if (!issue || !comment || payload.action !== 'created') return null;
+
+  return card('0078D7', `New comment on ${issue.title}`, [{
+    activityTitle: `New comment on issue/PR in ${repo.full_name}`,
+    activitySubtitle: `By [${comment.user.login}](${comment.user.html_url})`,
+    activityImage: comment.user.avatar_url,
+    facts: [{ name: 'Title:', value: issue.title }],
+    text: comment.body ? `"${comment.body.substring(0, 200)}${comment.body.length > 200 ? '...' : ''}"` : '',
+    markdown: true,
+  }], [openUriAction('View Comment', comment.html_url)]);
+}
+
+function formatPushEvent(payload: WebhookPayload): any | null {
+  const repo = payload.repository;
+  const branch = payload.ref?.replace('refs/heads/', '') || 'unknown';
+  const commits = payload.commits || [];
+  const compare = payload.compare;
+
+  const commitList = commits.slice(0, 5).map((c: any) =>
+    `- [\`${c.id?.substring(0, 7)}\`](${c.url || '#'}) ${c.message?.split('\n')[0] || 'No message'}`
+  ).join('\n');
+
+  return card('0078D7', `${commits.length} commit(s) pushed to ${repo.full_name}:${branch}`, [{
+    activityTitle: `**Push** to \`${branch}\` in ${repo.full_name}`,
+    activitySubtitle: `By [${payload.sender.login}](${payload.sender.html_url})`,
+    activityImage: payload.sender.avatar_url,
+    facts: [
+      { name: 'Branch:', value: branch },
+      { name: 'Commits:', value: `${commits.length}` },
+    ],
+    text: commitList || 'No commit details available.',
+    markdown: true,
+  }], compare ? [openUriAction('View Changes', compare)] : []);
+}
+
+function formatDeploymentStatusEvent(payload: WebhookPayload): any | null {
+  const repo = payload.repository;
+  const status = payload.deployment_status;
+  const deployment = payload.deployment;
+  if (!status) return null;
+
+  const themeColor = status.state === 'success' ? '238636'
+    : status.state === 'failure' || status.state === 'error' ? 'DA3633'
+      : '0078D7';
+
+  return card(themeColor, `Deployment ${status.state} in ${repo.full_name}`, [{
+    activityTitle: `Deployment **${status.state}** in ${repo.full_name}`,
+    activitySubtitle: `Environment: ${status.environment || 'unknown'}`,
+    activityImage: payload.sender.avatar_url,
+    facts: [
+      { name: 'Environment:', value: status.environment || '—' },
+      { name: 'State:', value: status.state },
+      { name: 'Ref:', value: deployment?.ref || '—' },
+    ],
+    text: status.description || '',
+    markdown: true,
+  }], status.target_url ? [openUriAction('View Deployment', status.target_url)] : []);
+}
+
+function formatReleaseEvent(payload: WebhookPayload): any | null {
+  const repo = payload.repository;
+  const release = payload.release;
+  if (!release) return null;
+
+  return card('238636', `Release ${release.tag_name} in ${repo.full_name}`, [{
+    activityTitle: `**Release ${release.tag_name}** published in ${repo.full_name}`,
+    activitySubtitle: `By [${release.author?.login || payload.sender.login}](${release.author?.html_url || payload.sender.html_url})`,
+    activityImage: release.author?.avatar_url || payload.sender.avatar_url,
+    facts: [
+      { name: 'Tag:', value: release.tag_name },
+      { name: 'Name:', value: release.name || release.tag_name },
+    ],
+    text: release.body ? release.body.substring(0, 500) : '',
+    markdown: true,
+  }], [openUriAction('View Release', release.html_url)]);
+}
+
+function formatGenericEvent(event: string, payload: WebhookPayload): any | null {
+  const repo = payload.repository;
   const action = payload.action;
 
-  if (!issue || !comment || action !== 'created') return null;
+  let title = `**${event}**${action ? `.${action}` : ''} in ${repo.full_name}`;
+  let detail = '';
 
-  return {
-    "@type": "MessageCard",
-    "@context": "http://schema.org/extensions",
-    "themeColor": "0078D7",
-    "summary": `New comment on ${issue.title}`,
-    "sections": [{
-      "activityTitle": `New comment on issue/PR in ${repo.full_name}`,
-      "activitySubtitle": `By [${comment.user.login}](${comment.user.html_url})`,
-      "activityImage": comment.user.avatar_url,
-      "facts": [
-        { "name": "Title:", "value": issue.title }
-      ],
-      "text": comment.body ? `"${comment.body.substring(0, 200)}${comment.body.length > 200 ? '...' : ''}"` : "",
-      "markdown": true
-    }],
-    "potentialAction": [{
-      "@type": "OpenUri",
-      "name": "View Comment",
-      "targets": [{ "os": "default", "uri": comment.html_url }]
-    }]
-  };
+  if (event === 'star') {
+    title = action === 'created'
+      ? `⭐ **New star** on ${repo.full_name}`
+      : `Star removed from ${repo.full_name}`;
+  } else if (event === 'fork') {
+    title = `🍴 **${repo.full_name}** was forked`;
+  } else if (event === 'workflow_run') {
+    const wf = payload.workflow_run;
+    if (wf) {
+      const icon = wf.conclusion === 'success' ? '✅' : wf.conclusion === 'failure' ? '❌' : '🔄';
+      title = `${icon} Workflow **${wf.name}** #${wf.run_number}`;
+      detail = `Conclusion: ${wf.conclusion || 'in progress'} | Branch: ${wf.head_branch}`;
+    }
+  }
+
+  return card('586069', title, [{
+    activityTitle: title,
+    activitySubtitle: `By [${payload.sender.login}](${payload.sender.html_url})`,
+    activityImage: payload.sender.avatar_url,
+    facts: [
+      { name: 'Repository:', value: `[${repo.name}](${repo.html_url})` },
+      ...(detail ? [{ name: 'Details:', value: detail }] : []),
+    ],
+    markdown: true,
+  }]);
 }
